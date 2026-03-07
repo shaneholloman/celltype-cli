@@ -101,6 +101,8 @@ async def process_messages(
                         thinking_status = None
                         if runner is not None:
                             runner._active_spinner = None
+                            if hasattr(runner, "session"):
+                                runner.session._active_spinner = None
                         
                     text = block.text or ""
                     full_text.append(text)
@@ -130,6 +132,9 @@ async def process_messages(
                             thinking_status.start_async_refresh()
                             if runner is not None:
                                 runner._active_spinner = thinking_status
+                            # Also store on session so MCP prompt can stop it
+                            if runner is not None and hasattr(runner, "session"):
+                                runner.session._active_spinner = thinking_status
                         except ImportError:
                             pass
                         

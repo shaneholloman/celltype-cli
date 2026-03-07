@@ -67,6 +67,14 @@ DEFAULTS = {
     "compute.lambda_api_key": None,
     "compute.runpod_api_key": None,
     "compute.default_provider": "lambda",
+    "compute.mode": "cloud",
+
+    "cloud.endpoint": "https://api.celltype.com",
+    "cloud.dashboard_url": "https://cloud.celltype.com",
+
+    "gpu.name": None,
+    "gpu.vram_mb": None,
+    "gpu.setup_completed": False,
 
     "sandbox.timeout": 30,
     "sandbox.output_dir": str(Path.cwd() / "outputs"),
