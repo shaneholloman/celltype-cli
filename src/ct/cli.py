@@ -205,19 +205,15 @@ def setup_cmd(
     cfg.save()
     console.print("\n  [green]API key saved to ~/.ct/config.json[/green]")
 
-    # Quick health check
+    # Quick validation (full diagnostics available via `ct doctor`)
     console.print()
-    console.print("  [cyan]Running health check...[/cyan]")
-    from ct.agent.doctor import run_checks, to_table, has_errors
+    console.print("  [cyan]Validating API key...[/cyan]")
+    from ct.agent.doctor import run_checks, has_errors
     checks = run_checks(cfg)
-    console.print(to_table(checks))
-
     if has_errors(checks):
-        console.print(
-            "\n  [yellow]Some issues detected.[/yellow] Run `ct doctor` for details."
-        )
+        console.print("  [red]✗[/red] Issues detected. Run [cyan]ct doctor[/cyan] for details.")
     else:
-        console.print("\n  [green]All checks passed.[/green]")
+        console.print("  [green]✓ API key valid[/green]")
 
     # Cloud setup
     _setup_cloud(cfg)
@@ -243,13 +239,13 @@ def _setup_cloud(cfg):
     console.print()
     console.print(
         Panel(
-            "Some tools like AlphaFold, ESMFold, and\n"
-            "DiffDock require GPUs to run. We can run\n"
-            "these jobs for you in the cloud.\n\n"
-            "Your account includes [bold]$10 in free\n"
+            "Some tools like protein structure prediction\n"
+            "and molecular docking require GPUs. We can\n"
+            "run these jobs for you in the cloud.\n\n"
+            "New accounts include [bold]$10 in free\n"
             "credits[/bold] to get started.\n\n"
-            "[dim]Prefer your own GPU? Switch anytime\n"
-            "with[/dim] [cyan]ct setup-gpu[/cyan][dim].[/dim]",
+            "Prefer your own GPU? Switch anytime\n"
+            "with [cyan]ct setup-gpu[/cyan].",
             title="[cyan]CellType Cloud[/cyan]",
             border_style="cyan",
         )
@@ -262,7 +258,6 @@ def _setup_cloud(cfg):
 
     from ct.cloud.auth import is_logged_in
     if not is_logged_in():
-        console.print("  Let's log you in to CellType Cloud...\n")
         login_cmd()
     else:
         from ct.cloud.auth import get_user_email
@@ -311,7 +306,6 @@ def _setup_gpu(cfg):
 
         from ct.cloud.auth import is_logged_in
         if not is_logged_in():
-            console.print("  Let's log you in to CellType Cloud...\n")
             login_cmd()
         else:
             from ct.cloud.auth import get_user_email
@@ -1957,20 +1951,19 @@ def login_cmd():
     session_code = result["session_code"]
     auth_url = result["auth_url"]
 
-    console.print(f"\n  Your code: [bold cyan]{session_code}[/bold cyan]")
-    console.print(f"\n  Open this URL in your browser to authorize:")
-    console.print(f"  [bold]{auth_url}[/bold]\n")
+    console.print(f"\n  Create a free account or sign in (includes [bold]$10 free credits[/bold]):")
+    console.print(f"  [link={auth_url}][cyan]{auth_url}[/cyan][/link]\n")
 
-    # Only open browser if there's a real display (not SSH/headless)
-    import os
-    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    # Auto-open browser on desktop platforms (skip SSH/headless Linux)
+    import os, sys
+    if sys.platform in ("darwin", "win32") or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         import webbrowser
         try:
             webbrowser.open(auth_url)
         except Exception:
             pass
 
-    console.print("  [dim]Waiting for authorization...[/dim]")
+    console.print("  Waiting for authorization...")
 
     try:
         auth = poll_for_approval(session_code)
