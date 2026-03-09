@@ -82,7 +82,16 @@ ok "ct $(ct --version 2>/dev/null || echo '(installed)')"
 
 # ── Run setup wizard ───────────────────────────────────────────
 
-info ""
-info "Running setup wizard..."
-info ""
-ct setup
+if "$PYTHON" -c 'import os; fd = os.open("/dev/tty", os.O_RDONLY); os.close(fd)' 2>/dev/null; then
+    info ""
+    info "Running setup wizard..."
+    info ""
+    # When installed via `curl ... | bash`, stdin is the download pipe rather
+    # than the user's keyboard. Reattach setup to the controlling terminal so
+    # interactive prompts and masked input work normally.
+    ct setup < /dev/tty
+else
+    warn ""
+    warn "Skipping interactive setup because no terminal is available."
+    warn "Run: ct setup"
+fi
