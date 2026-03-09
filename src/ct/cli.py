@@ -423,11 +423,13 @@ def setup_gpu_cmd():
 
 def _prompt_api_key() -> str:
     """Prompt user for API key with masked input."""
-    import getpass
+    from prompt_toolkit import prompt as pt_prompt
+
     console.print("  Get your key at: [link=https://console.anthropic.com/settings/keys]console.anthropic.com/settings/keys[/link]")
     console.print()
+    console.print("  [dim]Pasted/typed characters will appear as *[/dim]")
     try:
-        key = getpass.getpass("  Enter your Anthropic API key: ")
+        key = pt_prompt("  Enter your Anthropic API key: ", is_password=True)
     except (EOFError, KeyboardInterrupt):
         console.print("\n  [dim]Setup cancelled.[/dim]")
         raise typer.Exit()
