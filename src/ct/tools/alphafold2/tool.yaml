@@ -1,11 +1,36 @@
 name: structure.alphafold2
 display_name: AlphaFold2
-description: Predict protein structure using AlphaFold2 via OpenFold (GPU). Single-sequence mode, no MSA database required.
+description: Predict protein structure from a single sequence with AlphaFold2-compatible search controls (GPU).
 category: structure
-usage_guide: 'Use for gold-standard structure prediction. VRAM scales quadratically: 2GB for <100 residues, 40GB for >600.'
+usage_guide: 'Use for AlphaFold2-compatible single-chain prediction. Supports NIM-like database, e-value, algorithm, and relaxation controls.'
 docker_image: celltype/alphafold2:latest
 parameters:
-  sequence: Amino acid sequence
+  type: object
+  additionalProperties: false
+  required:
+    - sequence
+  properties:
+    sequence:
+      type: string
+      description: Single protein amino acid sequence.
+    databases:
+      type: array
+      description: Databases to query while building the MSA.
+      items:
+        type: string
+        enum: [small_bfd, uniref90, mgnify, uniprot]
+      minItems: 1
+    e_value:
+      type: number
+      description: E-value threshold used during MSA search.
+      minimum: 0
+    algorithm:
+      type: string
+      description: Alignment search algorithm.
+      enum: [mmseqs2, jackhmmer]
+    relax_prediction:
+      type: boolean
+      description: Whether to run the relaxation step after structure prediction.
 compute:
   requires_gpu: true
   min_vram_gb: 32

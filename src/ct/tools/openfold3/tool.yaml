@@ -1,13 +1,93 @@
 name: structure.openfold3
 display_name: OpenFold3
-description: Predict protein structure using OpenFold3 (GPU). Diffusion-based, supports optional MSA for higher accuracy.
+description: Predict biomolecular complex structures with an OpenFold3-compatible multimolecule request payload (GPU).
 category: structure
-usage_guide: 'Use for structure prediction with OpenFold3 (diffusion-based). VRAM scales quadratically: 4GB for <100 residues,
-  80GB for >600.'
+usage_guide: 'Use for OpenFold3-style multimolecule structure prediction across proteins, nucleic acids, and ligands.'
 docker_image: celltype/openfold3:latest
 parameters:
-  sequence: Amino acid sequence
-  run_msa: 'Run MSA search (default: false)'
+  type: object
+  additionalProperties: false
+  required:
+    - request_id
+    - inputs
+  properties:
+    request_id:
+      type: string
+      description: Top-level request identifier.
+    inputs:
+      type: array
+      description: One or more OpenFold3 prediction inputs.
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required:
+          - input_id
+          - molecules
+        properties:
+          input_id:
+            type: string
+            description: Input identifier unique within the request.
+          molecules:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: false
+              required:
+                - type
+                - id
+              properties:
+                type:
+                  type: string
+                  enum: [protein, dna, rna, ligand]
+                id:
+                  type: string
+                  description: Molecule or chain identifier.
+                sequence:
+                  type: string
+                  description: Sequence for protein, DNA, or RNA molecules.
+                msa:
+                  type: object
+                  description: Optional MSA payload for protein or RNA molecules.
+                  additionalProperties:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      csv:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - alignment
+                          - format
+                        properties:
+                          alignment:
+                            type: string
+                          format:
+                            type: string
+                            enum: [csv]
+                      a3m:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - alignment
+                          - format
+                        properties:
+                          alignment:
+                            type: string
+                          format:
+                            type: string
+                            enum: [a3m]
+                ccd_code:
+                  type: string
+                  description: CCD identifier for ligand molecules.
+                smiles:
+                  type: string
+                  description: SMILES string for ligand molecules.
+          output_format:
+            type: string
+            enum: [pdb, mmcif]
+            description: Structure output format.
 compute:
   requires_gpu: true
   min_vram_gb: 32

@@ -1,11 +1,61 @@
 name: structure.openfold2
 display_name: OpenFold2
-description: Predict protein structure using OpenFold2 / AlphaFold2 reimplementation (GPU).
+description: Predict protein structure from sequence, optional precomputed MSAs, and selected OpenFold2 model presets (GPU).
 category: structure
-usage_guide: 'Use for structure prediction. VRAM scales quadratically: 2GB for <100 residues, 40GB for >600.'
+usage_guide: 'Use for OpenFold2-compatible structure prediction from a single protein sequence. Accepts optional precomputed alignments and model selection.'
 docker_image: celltype/openfold2:latest
 parameters:
-  sequence: Amino acid sequence
+  type: object
+  additionalProperties: false
+  required:
+    - sequence
+  properties:
+    sequence:
+      type: string
+      description: Single protein amino acid sequence.
+    alignments:
+      type: object
+      description: Optional precomputed alignment payloads keyed by database name such as uniref90 or small_bfd.
+      additionalProperties:
+        type: object
+        additionalProperties: false
+        properties:
+          a3m:
+            type: object
+            additionalProperties: false
+            required:
+              - alignment
+              - format
+            properties:
+              alignment:
+                type: string
+                description: Raw A3M alignment text.
+              format:
+                type: string
+                enum: [a3m]
+          hhr:
+            type: object
+            additionalProperties: false
+            required:
+              - alignment
+              - format
+            properties:
+              alignment:
+                type: string
+                description: Raw HHR template-search text.
+              format:
+                type: string
+                enum: [hhr]
+    selected_models:
+      type: array
+      description: OpenFold parameter sets to run. Predictions are returned ordered by confidence.
+      items:
+        type: integer
+        enum: [1, 2, 3, 4, 5]
+      minItems: 1
+    relax_prediction:
+      type: boolean
+      description: Whether to run the relaxation step after structure prediction.
 compute:
   requires_gpu: true
   min_vram_gb: 32

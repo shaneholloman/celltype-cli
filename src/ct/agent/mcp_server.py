@@ -71,6 +71,14 @@ _PY_TYPE_MAP = {
 }
 
 
+def _is_json_schema(parameters: dict) -> bool:
+    return (
+        isinstance(parameters, dict)
+        and parameters.get("type") == "object"
+        and isinstance(parameters.get("properties"), dict)
+    )
+
+
 def _params_to_json_schema(parameters: dict) -> dict:
     """Convert a ct tool parameters dict to a JSON Schema object.
 
@@ -80,6 +88,9 @@ def _params_to_json_schema(parameters: dict) -> dict:
     """
     if not parameters:
         return {"type": "object", "properties": {}}
+
+    if _is_json_schema(parameters):
+        return parameters
 
     properties = {}
     for name, desc in parameters.items():
@@ -110,26 +121,26 @@ def _make_tool_handler(tool_obj, session):
         call_args["_session"] = session
         call_args["_prior_results"] = {}
 
-        # Coerce string values to numeric types when they look like numbers.
-        # MCP sends all parameters as strings, but tools often expect int/float.
-        for key, val in list(call_args.items()):
-            if key.startswith("_"):
-                continue
-            if isinstance(val, str):
-                # Try int first, then float
-                try:
-                    call_args[key] = int(val)
+        # Legacy flat ct manifests describe every parameter as a string, so keep
+        # backwards-compatible coercion there. Structured JSON Schema tools should
+        # preserve the exact payload emitted by the SDK.
+        if not _is_json_schema(getattr(tool_obj, "parameters", {})):
+            for key, val in list(call_args.items()):
+                if key.startswith("_"):
                     continue
-                except ValueError:
-                    pass
-                try:
-                    call_args[key] = float(val)
-                    continue
-                except ValueError:
-                    pass
-                # Boolean coercion
-                if val.lower() in ("true", "false"):
-                    call_args[key] = val.lower() == "true"
+                if isinstance(val, str):
+                    try:
+                        call_args[key] = int(val)
+                        continue
+                    except ValueError:
+                        pass
+                    try:
+                        call_args[key] = float(val)
+                        continue
+                    except ValueError:
+                        pass
+                    if val.lower() in ("true", "false"):
+                        call_args[key] = val.lower() == "true"
 
         try:
             # Route GPU tools through compute router

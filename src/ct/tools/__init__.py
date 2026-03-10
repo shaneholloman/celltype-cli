@@ -189,7 +189,7 @@ class ToolRegistry:
                 continue
             lines.append(f"\n## {cat}")
             for tool in cat_tools:
-                params = ", ".join(f"{k}: {v}" for k, v in tool.parameters.items())
+                params = _summarize_tool_parameters(tool.parameters)
                 lines.append(f"- **{tool.name}**({params}): {tool.description}")
                 if tool.usage_guide:
                     lines.append(f"  USE WHEN: {tool.usage_guide}")
@@ -208,6 +208,20 @@ class ToolRegistry:
 
 # Global registry instance
 registry = ToolRegistry()
+
+
+def _summarize_tool_parameters(parameters: dict) -> str:
+    if not isinstance(parameters, dict):
+        return ""
+    if parameters.get("type") == "object" and isinstance(parameters.get("properties"), dict):
+        parts = []
+        required = set(parameters.get("required", []))
+        for name, spec in parameters["properties"].items():
+            type_name = spec.get("type", "any") if isinstance(spec, dict) else "any"
+            suffix = " [required]" if name in required else ""
+            parts.append(f"{name}: {type_name}{suffix}")
+        return ", ".join(parts)
+    return ", ".join(f"{k}: {v}" for k, v in parameters.items())
 
 
 # Import tool modules to trigger registration

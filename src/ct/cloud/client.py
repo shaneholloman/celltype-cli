@@ -15,7 +15,8 @@ logger = logging.getLogger("ct.cloud.client")
 
 # Polling interval for job status
 JOB_POLL_INTERVAL = 2.0
-JOB_TIMEOUT = 600.0  # 10 minutes max
+# OpenFold3 and other large structure jobs can exceed 10 minutes end-to-end.
+JOB_TIMEOUT = 1800.0  # 30 minutes max
 
 
 class CloudClient:

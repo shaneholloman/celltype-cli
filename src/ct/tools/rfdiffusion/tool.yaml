@@ -5,9 +5,13 @@ category: design
 usage_guide: Use to design novel protein binders for a target. 2GB VRAM for small proteins, 8GB for >200 residues.
 docker_image: celltype/rfdiffusion:latest
 parameters:
-  target_pdb: Target protein structure as inline PDB/mmCIF text or a local path to a .pdb/.cif/.mmcif/.ent file
-  hotspot_residues: Optional binding site residues
+  pdb_text: Inline target protein structure as PDB text
+  target_pdb: Local path to a target protein structure file (.pdb, .cif, .mmcif, .ent)
+  mode: Design mode. Use `monomer` for unconditional backbone generation or `binder` for hotspot-guided binder design
   num_designs: 'Number of backbone designs (default: 5)'
+  receptor_chain: Required in `binder` mode. Single receptor chain ID present in `target_pdb`
+  binder_length: Required in `binder` mode. Length of the designed binder chain
+  hotspot_residues: Required in `binder` mode. Comma-separated canonical receptor residues like `A54,A57,A61`
 compute:
   requires_gpu: true
   min_vram_gb: 32

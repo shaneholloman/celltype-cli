@@ -1,11 +1,45 @@
 name: structure.alphafold2_multimer
 display_name: AlphaFold2-Multimer
-description: Predict multi-chain protein complex structure using AlphaFold2-Multimer (GPU).
+description: Predict multi-chain protein complex structure using an AlphaFold2-Multimer-compatible request contract (GPU).
 category: structure
-usage_guide: Use for predicting how multiple protein chains interact. VRAM scales with total residue count.
+usage_guide: Use for AlphaFold2-Multimer-style complex prediction from multiple protein sequences with explicit search controls.
 docker_image: celltype/alphafold2-multimer:latest
 parameters:
-  sequences: List of amino acid sequences (one per chain)
+  type: object
+  additionalProperties: false
+  required:
+    - sequences
+  properties:
+    sequences:
+      type: array
+      description: Protein sequences, one entry per chain.
+      items:
+        type: string
+      minItems: 2
+      maxItems: 6
+    databases:
+      type: array
+      description: Databases to query while building per-chain MSAs.
+      items:
+        type: string
+        enum: [small_bfd, uniref90, mgnify, uniprot]
+      minItems: 1
+    e_value:
+      type: number
+      description: E-value threshold used during MSA search.
+      minimum: 0
+    algorithm:
+      type: string
+      description: Alignment search algorithm.
+      enum: [mmseqs2, jackhmmer]
+    num_predictions_per_model:
+      type: integer
+      description: Number of predictions to sample per multimer model preset.
+      minimum: 1
+      maximum: 5
+    relax_prediction:
+      type: boolean
+      description: Whether to run the relaxation step after structure prediction.
 compute:
   requires_gpu: true
   min_vram_gb: 32
