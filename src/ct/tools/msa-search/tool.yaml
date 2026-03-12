@@ -1,8 +1,8 @@
 name: genomics.msa_search
 display_name: MSA-Search
-description: Search for homologous protein sequences using ColabFold MSA search (CPU). Returns multiple sequence alignment.
+description: Search for homologous protein sequences using local MMseqs2 against ColabFold databases (UniRef30 + EnvDB). Returns a multiple sequence alignment in A3M format.
 category: genomics
-usage_guide: Use to find homologous sequences via ColabFold API. CPU-only, API-based.
+usage_guide: Use to find homologous sequences for structure prediction inputs. Runs a full ColabFold-style search pipeline locally using MMseqs2 against UniRef30 and ColabFold EnvDB databases. CPU-only, no GPU required.
 docker_image: celltype/msa-search:latest
 reference:
   interface_url: https://build.nvidia.com/colabfold/msa-search
@@ -49,7 +49,8 @@ parameters:
       maximum: 6
 compute:
   requires_gpu: false
-  min_vram_gb: 32
+  min_vram_gb: 0
+  min_ram_gb: 64
   gpu_profile: msa
   estimated_cost_usd: 0.01
   cpu_only: true

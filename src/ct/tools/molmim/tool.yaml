@@ -57,7 +57,7 @@ parameters:
 compute:
   requires_gpu: false
   min_vram_gb: 0
-  gpu_profile: ''
+  gpu_profile: chemistry
   estimated_cost_usd: 0.01
   cpu_only: true
   gpu_type: ''

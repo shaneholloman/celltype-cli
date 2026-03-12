@@ -139,6 +139,11 @@ class LocalRunner:
             resolved.mkdir(parents=True, exist_ok=True)
             mounts.extend(["-v", f"{resolved}:{container_path}"])
 
+        # ColabFold databases for MSA search (read-only mount, don't create if missing)
+        colabfold_db = Path(os.environ.get("COLABFOLD_DB", home / ".cache" / "colabfold_db"))
+        if colabfold_db.exists() and colabfold_db.joinpath("uniref30_2302_db.dbtype").exists():
+            mounts.extend(["-v", f"{colabfold_db}:/vol/colabfold_db:ro"])
+
         return mounts
 
     def _get_gpu_flags(self, tool) -> list[str]:

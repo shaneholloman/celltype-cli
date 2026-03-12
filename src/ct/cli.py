@@ -570,6 +570,120 @@ def tool_list(
         )
 
 
+def _pull_colabfold_databases(console):
+    """Download ColabFold databases (UniRef30 + EnvDB) for local MSA search."""
+    import shutil
+    from pathlib import Path
+
+    home = Path.home()
+    db_dir = Path(os.environ.get("COLABFOLD_DB", home / ".cache" / "colabfold_db"))
+    uniref_ready = db_dir / "UNIREF30_READY"
+    envdb_ready = db_dir / "COLABDB_READY"
+
+    if uniref_ready.exists() and envdb_ready.exists():
+        size = sum(f.stat().st_size for f in db_dir.rglob("*") if f.is_file()) / (1024**3)
+        console.print(f"[green]ColabFold databases already downloaded at {db_dir} ({size:.0f}GB)[/green]")
+        return
+
+    console.print(f"\n[bold]MSA-Search requires ColabFold databases for local execution.[/bold]")
+    console.print(f"  Location: {db_dir}")
+    console.print(f"  Download: ~220GB compressed, ~500GB extracted")
+    console.print(f"  Databases: UniRef30 2302 + ColabFold EnvDB 202108\n")
+
+    if not shutil.which("mmseqs"):
+        console.print("[yellow]Installing mmseqs2...[/yellow]")
+        import subprocess
+        subprocess.check_call(
+            "cd /tmp && wget -q https://mmseqs.com/latest/mmseqs-linux-avx2.tar.gz "
+            "&& tar xzf mmseqs-linux-avx2.tar.gz "
+            "&& sudo cp mmseqs/bin/mmseqs /usr/local/bin/ "
+            "&& rm -rf mmseqs mmseqs-linux-avx2.tar.gz",
+            shell=True,
+        )
+        console.print("[green]mmseqs2 installed.[/green]")
+
+    download_tool = None
+    for tool in ["aria2c", "curl", "wget"]:
+        if shutil.which(tool):
+            download_tool = tool
+            break
+    if not download_tool:
+        console.print("[red]No download tool found. Install aria2c, curl, or wget.[/red]")
+        return
+
+    db_dir.mkdir(parents=True, exist_ok=True)
+    import subprocess
+
+    UNIREF = "uniref30_2302"
+    ENVDB = "colabfold_envdb_202108"
+
+    def _download(url, output):
+        console.print(f"  Downloading {Path(output).name}...")
+        if download_tool == "aria2c":
+            subprocess.check_call(
+                ["aria2c", "--max-connection-per-server=8", "--allow-overwrite=true",
+                 "-o", Path(output).name, "-d", str(Path(output).parent), url])
+        elif download_tool == "curl":
+            subprocess.check_call(["curl", "-L", "-o", str(output), url])
+        else:
+            subprocess.check_call(["wget", "-O", str(output), url])
+
+    os.environ["MMSEQS_FORCE_MERGE"] = "1"
+
+    if not uniref_ready.exists():
+        tarball = db_dir / f"{UNIREF}.tar.gz"
+        if not tarball.exists():
+            _download(
+                f"https://opendata.mmseqs.org/colabfold/{UNIREF}.db.tar.gz",
+                str(tarball))
+        console.print(f"  Extracting {UNIREF} (this takes ~15 minutes)...")
+        subprocess.check_call(["tar", "-xzf", str(tarball)], cwd=str(db_dir))
+
+        tax_tarball = db_dir / f"{UNIREF}_newtaxonomy.tar.gz"
+        if not tax_tarball.exists():
+            _download(
+                f"https://opendata.mmseqs.org/colabfold/{UNIREF}_newtaxonomy.tar.gz",
+                str(tax_tarball))
+        subprocess.check_call(["tar", "-xzf", str(tax_tarball)], cwd=str(db_dir))
+
+        mapping = db_dir / f"{UNIREF}_db_mapping"
+        if mapping.exists():
+            try:
+                subprocess.check_call(
+                    ["mmseqs", "createbintaxmapping", str(mapping), str(mapping) + ".bin"])
+                os.replace(str(mapping) + ".bin", str(mapping))
+            except Exception:
+                pass
+            for src, dst in [
+                (f"{UNIREF}_db_mapping", f"{UNIREF}_db.idx_mapping"),
+                (f"{UNIREF}_db_taxonomy", f"{UNIREF}_db.idx_taxonomy"),
+            ]:
+                src_path = db_dir / src
+                dst_path = db_dir / dst
+                if src_path.exists() and not dst_path.exists():
+                    dst_path.symlink_to(src_path.name)
+
+        uniref_ready.touch()
+        tarball.unlink(missing_ok=True)
+        tax_tarball.unlink(missing_ok=True)
+        console.print(f"[green]  UniRef30 ready.[/green]")
+
+    if not envdb_ready.exists():
+        tarball = db_dir / f"{ENVDB}.tar.gz"
+        if not tarball.exists():
+            _download(
+                f"https://opendata.mmseqs.org/colabfold/{ENVDB}.db.tar.gz",
+                str(tarball))
+        console.print(f"  Extracting {ENVDB} (this takes ~20 minutes)...")
+        subprocess.check_call(["tar", "-xzf", str(tarball)], cwd=str(db_dir))
+        envdb_ready.touch()
+        tarball.unlink(missing_ok=True)
+        console.print(f"[green]  ColabFold EnvDB ready.[/green]")
+
+    console.print(f"\n[green bold]ColabFold databases ready at {db_dir}[/green bold]")
+    console.print("MSA-Search will use local MMseqs2 for fast, reliable homology search.")
+
+
 @tool_app.command("pull")
 def tool_pull(
     tool_name: str = typer.Argument(..., help="Tool name (e.g., structure.esmfold)"),
@@ -653,10 +767,14 @@ def tool_pull(
             raise typer.Exit(code=1)
         console.print(f"[green]Built {docker_image}[/green]")
 
-    # Step 2: Pre-download weights by running container with cache mounts
-    # This triggers the first-run weight download inside the container
+    # Step 2: Pre-download weights / databases
     compute = config.get("compute", {})
     cpu_only = compute.get("cpu_only", False) or not compute.get("requires_gpu", True)
+
+    if tool_name == "genomics.msa_search":
+        _pull_colabfold_databases(console)
+        return
+
     if cpu_only:
         console.print(f"[green]{display_name} is CPU-only, no weights to download.[/green]")
         return

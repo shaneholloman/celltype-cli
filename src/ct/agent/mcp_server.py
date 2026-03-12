@@ -144,7 +144,7 @@ def _make_tool_handler(tool_obj, session):
 
         try:
             # Route GPU tools through compute router
-            if getattr(tool_obj, "requires_gpu", False):
+            if getattr(tool_obj, "requires_gpu", False) or getattr(tool_obj, "cpu_only", False):
                 from ct.cloud.router import ComputeRouter
                 router = ComputeRouter(config=getattr(session, "config", None))
                 result = await asyncio.to_thread(router.route, tool_obj, **call_args)
