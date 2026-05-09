@@ -1278,3 +1278,103 @@ def ddi_predict(smiles: str, comedication_smiles: str = None, **kwargs) -> dict:
         result["comedication_analysis"] = comedication_analysis
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# IEDB immunogenicity tool (local data)
+# ---------------------------------------------------------------------------
+
+@registry.register(
+    name="safety.iedb_epitopes",
+    description="Query IEDB (Immune Epitope Database) for T-cell epitopes in a protein. Critical for assessing pre-existing immunity to gene editor proteins (e.g., SpCas9).",
+    category="safety",
+    parameters={
+        "protein": "Protein name or source organism to search (e.g. 'Cas9', 'Streptococcus pyogenes', 'SaCas9')",
+        "mhc_class": "MHC class filter: 'I', 'II', or 'all' (default 'all')",
+    },
+    requires_data=["iedb"],
+    usage_guide="Assess pre-existing T-cell immunity risk for therapeutic proteins, especially CRISPR editor proteins. ~60% of humans have T-cell responses to SpCas9.",
+)
+def iedb_epitopes(protein: str, mhc_class: str = "all", **kwargs) -> dict:
+    """Query IEDB T-cell epitope data for a protein."""
+    import zipfile
+    from ct.data.loaders import _find_file
+
+    zip_path = _find_file(
+        "tcell_full_v3.zip",
+        subdirs=["safety/iedb", "iedb"],
+    )
+    if zip_path is None:
+        return {
+            "error": "IEDB data not found",
+            "summary": "IEDB tcell_full_v3.zip not found. Set data.base to your bronze data directory.",
+        }
+
+    protein = str(protein).strip()
+
+    try:
+        z = zipfile.ZipFile(str(zip_path))
+        csv_name = [n for n in z.namelist() if n.endswith(".csv")][0]
+        df = pd.read_csv(z.open(csv_name), low_memory=False)
+    except Exception as e:
+        return {"error": f"Failed to read IEDB data: {e}", "summary": f"Error reading IEDB: {e}"}
+
+    # IEDB v3 columns: Epitope.2=Name, Epitope.14=Source Organism,
+    # Epitope.10=Source Molecule, MHC Restriction=Name, MHC Restriction.4=Class,
+    # 1st in vivo Process.4=Qualitative Measurement
+    search_term = protein.lower()
+    mask = pd.Series(False, index=df.index)
+
+    # Search across epitope name, source organism, source molecule
+    for col in ["Epitope.2", "Epitope.14", "Epitope.10", "Epitope.12",
+                 "Epitope.3", "Assay Antigen.3"]:
+        if col in df.columns and df[col].dtype == object:
+            mask |= df[col].str.lower().str.contains(search_term, na=False)
+
+    matches = df[mask]
+
+    # Filter by MHC class
+    if mhc_class.lower() != "all" and "MHC Restriction.4" in matches.columns:
+        matches = matches[matches["MHC Restriction.4"].str.contains(mhc_class, case=False, na=False)]
+
+    # Extract structured epitope data
+    epitopes = []
+    for _, row in matches.head(100).iterrows():
+        epitope_name = str(row.get("Epitope.2", ""))
+        if not epitope_name or epitope_name == "nan":
+            continue
+        epitopes.append({
+            "epitope": epitope_name,
+            "source_organism": str(row.get("Epitope.14", "")),
+            "source_molecule": str(row.get("Epitope.10", "")),
+            "mhc_allele": str(row.get("MHC Restriction", "")),
+            "mhc_class": str(row.get("MHC Restriction.4", "")),
+            "response": str(row.get("1st in vivo Process.4", row.get("1st in vitro Process.4", ""))),
+            "assay_type": str(row.get("1st in vivo Process.2", row.get("1st in vitro Process.2", ""))),
+        })
+
+    # Deduplicate by epitope sequence
+    seen = set()
+    unique_epitopes = []
+    for ep in epitopes:
+        key = ep["epitope"]
+        if key not in seen:
+            seen.add(key)
+            unique_epitopes.append(ep)
+
+    positive = [e for e in unique_epitopes if e.get("response", "").lower().startswith("positive")]
+
+    return {
+        "summary": (
+            f"IEDB: {len(unique_epitopes)} unique T-cell epitopes found for '{protein}' "
+            f"({len(positive)} positive responses). "
+            f"Total matching records: {len(matches)}."
+        ),
+        "source": "IEDB v3 (Immune Epitope Database)",
+        "source_file": "safety/iedb/tcell_full_v3.zip",
+        "query": {"protein": protein, "mhc_class": mhc_class},
+        "total_records": len(matches),
+        "unique_epitopes": len(unique_epitopes),
+        "positive_responses": len(positive),
+        "epitopes": unique_epitopes[:30],
+    }

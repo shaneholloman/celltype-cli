@@ -78,14 +78,26 @@ from ct.ui.suggestions import DEFAULT_SUGGESTIONS
 # @ Mention: datasets and completer
 # ---------------------------------------------------------------------------
 
-DATASET_CANDIDATES = [
-    ("depmap", "dataset", "DepMap CRISPR/model data"),
-    ("prism", "dataset", "PRISM drug sensitivity"),
-    ("l1000", "dataset", "L1000 gene expression signatures"),
-    ("proteomics", "dataset", "Proteomics log2FC matrix"),
-    ("msigdb", "dataset", "MSigDB gene sets"),
-    ("string", "dataset", "STRING protein interaction network"),
-]
+def _build_dataset_candidates() -> list[tuple[str, str, str]]:
+    """Build dataset candidates from the data catalog."""
+    try:
+        from ct.data.catalog import get_catalog
+        return [
+            (src.id, "dataset", f"{src.name} — {src.description[:90]}")
+            for src in get_catalog()
+        ]
+    except Exception:
+        # Fallback to hardcoded basics if catalog not available
+        return [
+            ("depmap", "dataset", "DepMap CRISPR/model data"),
+            ("prism", "dataset", "PRISM drug sensitivity"),
+            ("l1000", "dataset", "L1000 gene expression signatures"),
+            ("proteomics", "dataset", "Proteomics log2FC matrix"),
+            ("msigdb", "dataset", "MSigDB gene sets"),
+            ("string", "dataset", "STRING protein interaction network"),
+        ]
+
+DATASET_CANDIDATES = _build_dataset_candidates()
 
 KNOWN_DATASETS = frozenset(d[0] for d in DATASET_CANDIDATES)
 
@@ -103,23 +115,29 @@ def extract_mentions(text: str):
     """Parse @mentions from input text.
 
     Returns:
-        tuple of (cleaned_query, tool_names, dataset_names, workflow_names)
+        tuple of (cleaned_query, tool_names, dataset_names, workflow_names, file_paths)
     """
     dataset_names_set = {d[0] for d in DATASET_CANDIDATES}
     workflow_names_set = _get_workflow_names()
+    file_pattern = re.compile(r"@file\{([^}]+)\}")
     tool_pattern = re.compile(r"@(\w+\.\w+)")
     word_pattern = re.compile(r"@(\w+)")
 
     tools = []
     datasets = []
     workflows = []
+    files = []
+
+    for m in file_pattern.finditer(text):
+        files.append(m.group(1))
 
     # Find @category.tool_name mentions first
-    for m in tool_pattern.finditer(text):
+    cleaned = file_pattern.sub("", text)
+    for m in tool_pattern.finditer(cleaned):
         tools.append(m.group(1))
 
     # Find @dataset and @workflow mentions (single word, no dot)
-    cleaned = tool_pattern.sub("", text)
+    cleaned = tool_pattern.sub("", cleaned)
     for m in word_pattern.finditer(cleaned):
         name = m.group(1)
         if name in dataset_names_set:
@@ -128,14 +146,20 @@ def extract_mentions(text: str):
             workflows.append(name)
 
     # Strip all recognized @mentions from query
-    query = re.sub(r"@\w+(?:\.\w+)?", "", text).strip()
+    query = file_pattern.sub("", text)
+    query = re.sub(r"@\w+(?:\.\w+)?", "", query).strip()
     # Collapse multiple spaces
     query = re.sub(r"\s{2,}", " ", query)
 
-    return query, tools, datasets, workflows
+    return query, tools, datasets, workflows, files
 
 
-def build_mention_context(tools: list[str], datasets: list[str], workflows: list[str] | None = None) -> str:
+def build_mention_context(
+    tools: list[str],
+    datasets: list[str],
+    workflows: list[str] | None = None,
+    files: list[str] | None = None,
+) -> str:
     """Build context string from extracted mentions for planner injection."""
     parts = []
     if tools:
@@ -163,6 +187,12 @@ def build_mention_context(tools: list[str], datasets: list[str], workflows: list
                     )
         except Exception:
             pass
+    if files:
+        for file_path in files:
+            parts.append(
+                f"User requested file context from data.base: {file_path}. "
+                f"If relevant, inspect or analyze this file."
+            )
     return "\n".join(parts)
 
 
@@ -255,18 +285,59 @@ class MentionCompleter(Completer):
     *kind* is ``"tool"``, ``"dataset"``, or ``"file"``.
     """
 
-    TABS = ["All", "Tools", "DB", "Files", "Flows"]
+    TABS = ["All", "Tools", "DB", "Flows"]
     _TAB_FILTERS = {
         0: None,          # All
         1: "tool",        # Tools
-        2: "dataset",     # DB
-        3: "file",        # Files
-        4: "workflow",    # Flows
+        2: "dataset",     # DB (catalog entries)
+        3: "workflow",    # Flows
     }
 
-    def __init__(self, candidates: list[tuple[str, str, str, str]] | None = None):
+    def __init__(
+        self,
+        candidates: list[tuple[str, str, str, str]] | None = None,
+        extra_candidates_loader=None,
+        on_candidates_changed=None,
+    ):
         self.candidates = candidates or []
         self._active_tab = 0
+        self._extra_candidates_loader = extra_candidates_loader
+        self._on_candidates_changed = on_candidates_changed
+        self._extra_candidates_loaded = False
+        self._extra_candidates_loading = False
+        self._extra_candidates_lock = threading.Lock()
+
+    def _ensure_extra_candidates_loading(self):
+        """Load heavier tool/file candidates in the background on first @ use."""
+        if self._extra_candidates_loaded or self._extra_candidates_loading or not self._extra_candidates_loader:
+            return
+
+        with self._extra_candidates_lock:
+            if self._extra_candidates_loaded or self._extra_candidates_loading:
+                return
+            self._extra_candidates_loading = True
+
+        def _load():
+            try:
+                extras = self._extra_candidates_loader() or []
+                seen = {(name, kind) for name, _, _, kind in self.candidates}
+                for candidate in extras:
+                    name, _, _, kind = candidate
+                    if (name, kind) not in seen:
+                        self.candidates.append(candidate)
+                        seen.add((name, kind))
+            except Exception:
+                pass
+            finally:
+                self._extra_candidates_loading = False
+                self._extra_candidates_loaded = True
+                if self._on_candidates_changed:
+                    try:
+                        self._on_candidates_changed()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_load, daemon=True).start()
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -274,6 +345,8 @@ class MentionCompleter(Completer):
         at_pos = text.rfind("@")
         if at_pos < 0:
             return
+
+        self._ensure_extra_candidates_loading()
 
         partial = text[at_pos + 1:].lower()
         replace_len = len(text) - at_pos  # replace from @ onwards
@@ -298,15 +371,19 @@ class MentionCompleter(Completer):
         styles = {
             "tool": "class:mention-tool",
             "dataset": "class:mention-dataset",
-            "file": "class:mention-file",
             "workflow": "class:mention-workflow",
         }
 
+        if not by_category:
+            return
+
         for category in sorted(by_category):
             for name, description, kind in sorted(by_category[category]):
+                completion_text = f"@{name}"
                 yield Completion(
-                    f"@{name}",
+                    completion_text,
                     start_position=-replace_len,
+                    display=f"@{name}",
                     display_meta=description,
                     style=styles.get(kind, ""),
                 )
@@ -450,24 +527,53 @@ def _build_key_bindings(terminal):
         """Option+Enter / Alt+Enter inserts newline."""
         event.app.current_buffer.insert_text("\n")
 
-    @kb.add("enter", filter=has_completions)
-    def _accept_first_completion(event):
-        """When completions are visible on a / command, accept the current
-        (or first) completion and submit."""
+    def _submit_buffer(event):
+        """Submit the current buffer, accepting visible completions first.
+
+        Some PTY/browser stacks deliver Enter as carriage return (Control-M)
+        rather than relying on prompt_toolkit's default accept handler. Handle
+        submit explicitly so both native terminals and web-backed PTYs use the
+        same code path.
+        """
         buf = event.app.current_buffer
+        text = buf.text
         cs = buf.complete_state
-        if buf.text.lstrip().startswith("/") and cs and cs.completions:
+        if cs and cs.completions:
+            is_slash = text.lstrip().startswith("/")
+            is_mention = "@" in text
+
             # If nothing is selected yet, jump to the first completion
             if cs.complete_index is None:
                 buf.go_to_completion(0)
                 cs = buf.complete_state  # refresh after navigation
+
             if cs and cs.current_completion:
                 buf.apply_completion(cs.current_completion)
-            buf.validate_and_handle()
+
+            if is_slash:
+                buf.validate_and_handle()
+            elif is_mention:
+                buf.cancel_completion()
+            else:
+                buf.validate_and_handle()
         else:
-            # Non-slash: just submit normally
+            mention_match = re.search(r"(@[^\s]*)$", text)
+            if mention_match:
+                mention_token = mention_match.group(1)
+                is_complete_mention = bool(re.fullmatch(r"@(?:\w+\.\w+|\w+|file\{[^}]+\})", mention_token))
+                if not is_complete_mention:
+                    buf.start_completion()
+                    return
+            if "@" in text and text.strip() == "@":
+                buf.start_completion()
+                return
             buf.cancel_completion()
             buf.validate_and_handle()
+
+    @kb.add("enter", eager=True)
+    @kb.add("c-m", eager=True)
+    def _accept_first_completion(event):
+        _submit_buffer(event)
 
     @kb.add("right", filter=has_completions)
     def _mention_tab_right(event):
@@ -516,7 +622,11 @@ class InteractiveTerminal:
         mention_candidates = self._build_mention_candidates()
         self._merged_completer = MergedCompleter(
             slash=SlashCompleter(),
-            mention=MentionCompleter(mention_candidates),
+            mention=MentionCompleter(
+                mention_candidates,
+                extra_candidates_loader=self._load_additional_mention_candidates,
+                on_candidates_changed=self._refresh_completion_menu,
+            ),
         )
         self._prompt_session = PromptSession(
             history=FileHistory(str(self.history_file)),
@@ -526,6 +636,7 @@ class InteractiveTerminal:
             key_bindings=_build_key_bindings(self),
             multiline=False,  # Ctrl+J / Alt+Enter for newlines
         )
+
         # Auto-highlight (not apply) the first completion for slash commands
         # so the dropdown shows which item will be accepted on Enter.
         def _auto_highlight_first(buf):
@@ -533,7 +644,6 @@ class InteractiveTerminal:
                     and buf.complete_state
                     and buf.complete_state.complete_index is None
                     and buf.complete_state.completions):
-                # Set the index directly — this highlights without changing text
                 buf.complete_state.go_to_index(0)
 
         self._prompt_session.default_buffer.on_completions_changed += _auto_highlight_first
@@ -547,16 +657,9 @@ class InteractiveTerminal:
         # Add datasets
         for name, category, description in DATASET_CANDIDATES:
             candidates.append((name, category, description, "dataset"))
-        # Add tools from registry (lazy load)
-        try:
-            from ct.tools import registry, ensure_loaded
-            ensure_loaded()
-            for tool in registry.list_tools():
-                candidates.append(
-                    (tool.name, tool.category, tool.description[:80], "tool")
-                )
-        except Exception:
-            pass  # Registry not available — datasets still work
+        # Loading the full tool registry during terminal startup can break
+        # prompt_toolkit input handling in some web-backed PTY environments.
+        # Keep startup lightweight and populate tool mentions lazily elsewhere.
         # Add workflow candidates
         try:
             from ct.agent.workflows import WORKFLOWS
@@ -567,20 +670,39 @@ class InteractiveTerminal:
                 )
         except Exception:
             pass  # Workflows not available
-        # Add file candidates from configured data directory
-        try:
-            data_base = self.session.config.get("data.base", "")
-            if data_base:
-                data_path = Path(data_base)
-                if data_path.is_dir():
-                    for f in sorted(data_path.rglob("*")):
-                        if f.is_file() and not f.name.startswith("."):
-                            candidates.append(
-                                (f.name, "file", str(f.relative_to(data_path)), "file")
-                            )
-        except Exception:
-            pass  # Best-effort file scanning
+        # Avoid recursive data-lake scans during prompt startup. On some
+        # mounted/remote filesystems this can interfere with prompt_toolkit's
+        # interactive input handling in web-backed PTYs.
         return candidates
+
+    def _load_additional_mention_candidates(self) -> list[tuple[str, str, str, str]]:
+        """Load heavier mention sources after the prompt is already interactive."""
+        extra_candidates = []
+
+        try:
+            from ct.tools import ensure_loaded, registry
+
+            ensure_loaded()
+            for tool in registry.list_tools():
+                extra_candidates.append(
+                    (tool.name, tool.category, tool.description or tool.name, "tool")
+                )
+        except Exception:
+            pass
+
+        # Data catalog entries are already loaded as dataset candidates
+        # via DATASET_CANDIDATES at module level. No filesystem scan needed.
+
+        return extra_candidates
+
+    def _refresh_completion_menu(self):
+        """Repaint completion UI after background mention candidates load."""
+        try:
+            app = self._prompt_session.app
+            if app and app.is_running:
+                app.invalidate()
+        except Exception:
+            pass
 
     def _current_placeholder(self):
         """Return the current ghost suggestion as dim placeholder text."""
@@ -858,9 +980,14 @@ class InteractiveTerminal:
         run_context = dict(context)
 
         # Extract @mentions and inject into context
-        cleaned_query, mention_tools, mention_datasets, mention_workflows = extract_mentions(query)
-        if mention_tools or mention_datasets or mention_workflows:
-            mention_ctx = build_mention_context(mention_tools, mention_datasets, mention_workflows)
+        cleaned_query, mention_tools, mention_datasets, mention_workflows, mention_files = extract_mentions(query)
+        if mention_tools or mention_datasets or mention_workflows or mention_files:
+            mention_ctx = build_mention_context(
+                mention_tools,
+                mention_datasets,
+                mention_workflows,
+                mention_files,
+            )
             run_context["mention_context"] = mention_ctx
             query = cleaned_query
 

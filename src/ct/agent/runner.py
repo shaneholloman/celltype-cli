@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import traceback
+from pathlib import Path
 
 from ct.agent.types import ExecutionResult, Plan, Step
 
@@ -318,17 +319,27 @@ class AgentRunner:
             from ct.tools import EXPERIMENTAL_CATEGORIES
             exclude_cats = set(EXPERIMENTAL_CATEGORIES)
 
+        # Set sandbox.extra_read_dirs BEFORE creating MCP server (which creates the Sandbox)
+        data_context = None
+        data_dir = ctx.get("data_dir")
+        extra_dirs = []
+        if data_dir:
+            data_context = f"Data directory: {data_dir}\n"
+            extra_dirs.append(str(data_dir))
+
+        # Add data.base to sandbox read dirs so run_python can access the data lake
+        data_base = config.get("data.base")
+        if data_base and Path(data_base).exists():
+            if str(data_base) not in extra_dirs:
+                extra_dirs.append(str(data_base))
+
+        if extra_dirs:
+            config.set("sandbox.extra_read_dirs", ",".join(extra_dirs))
+
         server, sandbox, tool_names, code_trace_buffer = create_ct_mcp_server(
             self.session,
             exclude_categories=exclude_cats,
         )
-
-        # ----- Build system prompt -----
-        data_context = None
-        data_dir = ctx.get("data_dir")
-        if data_dir:
-            data_context = f"Data directory: {data_dir}\n"
-            config.set("sandbox.extra_read_dirs", str(data_dir))
 
         history = None
         if self.trajectory and self.trajectory.turns:

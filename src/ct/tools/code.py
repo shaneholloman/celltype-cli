@@ -404,6 +404,38 @@ Use the run_python tool to execute Python code step by step.
   `result = {"summary": "...", "answer": "YOUR_ANSWER"}`
   This is REQUIRED — do not just print the answer.
 - Do NOT output bare code — always use the run_python tool.
+
+## Specialized Analysis Patterns
+
+### Metabolic Flux Analysis (COBRApy)
+```python
+import cobra
+model = cobra.io.load_json_model(str(DATA_ROOT / "gene_context/metabolic/recon3d/Recon3D.json.gz"))
+# Knockout a gene: find the gene, set all its reaction bounds to 0
+gene = model.genes.get_by_id("HK1")
+gene.knock_out()
+solution = model.optimize()
+print(f"Growth rate after KO: {solution.objective_value}")
+```
+
+### DNA Methylation Analysis (R via run_r)
+```r
+# methylKit for differential methylation
+library(methylKit)
+# Read methylation data (bismark coverage format)
+obj = methRead("sample.cov", sample.id="S1", assembly="hg38", treatment=0, mincov=10)
+# For differential analysis between groups:
+# meth = unite(obj_list); diff = calculateDiffMeth(meth)
+```
+
+### Gene Regulatory Network Inference (pySCENIC)
+```python
+from arboreto.algo import grnboost2
+import pandas as pd
+# expression_matrix: genes x cells DataFrame
+adjacencies = grnboost2(expression_data=expression_matrix.T, tf_names=tf_list)
+# Returns DataFrame with TF, target, importance columns
+```
 """
 
 SCRIPT_GEN_SYSTEM_PROMPT = """You write standalone Python scripts for users.

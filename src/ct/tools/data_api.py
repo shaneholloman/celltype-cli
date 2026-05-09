@@ -2112,3 +2112,132 @@ def drug_info(query: str, include: list = None, **kwargs) -> dict:
         "synonyms": synonyms,
         "pubchem_url": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
     }
+
+
+# ---------------------------------------------------------------------------
+# Data lake inspection tool
+# ---------------------------------------------------------------------------
+
+@registry.register(
+    name="data.inspect",
+    description="Peek at a dataset in the data lake: show columns, dtypes, shape, and first N rows. Use to explore a dataset before writing analysis code.",
+    category="data_api",
+    parameters={
+        "path": "Path relative to DATA_ROOT (from the data catalog), e.g. 'gene_context/genomic/gnomad/gnomad.v4.1.constraint_metrics.tsv'",
+        "head": "Number of rows to preview (default 5)",
+    },
+    requires_data=[],
+    usage_guide="Explore a dataset before writing analysis code. Returns columns, dtypes, shape, and first N rows. Supports TSV, CSV, Parquet, and JSON.",
+)
+def inspect_dataset(path: str, head: int = 5, **kwargs) -> dict:
+    """Inspect a dataset file from the data lake."""
+    from pathlib import Path as _Path
+    from ct.agent.config import Config
+    import json as _json
+
+    cfg = Config.load()
+    data_base = cfg.get("data.base")
+    if not data_base:
+        return {"error": "data.base not configured", "summary": "Set data.base to your bronze data directory."}
+
+    full_path = _Path(data_base) / path
+    if not full_path.exists():
+        # Try as directory
+        if full_path.parent.exists():
+            import glob
+            candidates = glob.glob(str(full_path.parent / "*"))[:10]
+            return {
+                "error": f"File not found: {path}",
+                "summary": f"File not found at {full_path}",
+                "nearby_files": [_Path(c).name for c in candidates],
+            }
+        return {"error": f"File not found: {path}", "summary": f"Path {full_path} does not exist."}
+
+    head = int(head) if head else 5
+    head = min(head, 20)  # Cap at 20 rows
+
+    try:
+        suffix = full_path.suffix.lower()
+
+        if full_path.is_dir():
+            # Parquet directory
+            import pandas as pd
+            df = pd.read_parquet(full_path)
+            return {
+                "summary": f"Parquet directory: {df.shape[0]} rows x {df.shape[1]} cols",
+                "source_file": path,
+                "shape": list(df.shape),
+                "columns": df.columns.tolist(),
+                "dtypes": {col: str(dt) for col, dt in df.dtypes.items()},
+                "head": df.head(head).to_dict("records"),
+            }
+
+        if suffix in (".tsv", ".csv", ".txt"):
+            import pandas as pd
+            sep = "\t" if suffix == ".tsv" or "tsv" in str(full_path).lower() else ","
+            df = pd.read_csv(full_path, sep=sep, nrows=head + 5)
+            return {
+                "summary": f"{suffix.upper()} file: {df.shape[1]} columns, showing first {min(head, len(df))} rows",
+                "source_file": path,
+                "shape": [None, df.shape[1]],  # row count unknown without full read
+                "columns": df.columns.tolist(),
+                "dtypes": {col: str(dt) for col, dt in df.dtypes.items()},
+                "head": df.head(head).to_dict("records"),
+            }
+
+        if suffix == ".parquet":
+            import pandas as pd
+            df = pd.read_parquet(full_path)
+            return {
+                "summary": f"Parquet file: {df.shape[0]} rows x {df.shape[1]} cols",
+                "source_file": path,
+                "shape": list(df.shape),
+                "columns": df.columns.tolist(),
+                "dtypes": {col: str(dt) for col, dt in df.dtypes.items()},
+                "head": df.head(head).to_dict("records"),
+            }
+
+        if suffix == ".json":
+            with open(full_path) as f:
+                data = _json.load(f)
+            if isinstance(data, list):
+                return {
+                    "summary": f"JSON array: {len(data)} records",
+                    "source_file": path,
+                    "record_count": len(data),
+                    "head": data[:head],
+                }
+            elif isinstance(data, dict):
+                keys = list(data.keys())
+                return {
+                    "summary": f"JSON object: {len(keys)} top-level keys",
+                    "source_file": path,
+                    "keys": keys[:20],
+                    "sample": {k: str(data[k])[:200] for k in keys[:5]},
+                }
+
+        if suffix == ".gz":
+            import pandas as pd
+            # Try as gzipped TSV/CSV
+            try:
+                df = pd.read_csv(full_path, sep="\t", nrows=head + 5, compression="gzip")
+                return {
+                    "summary": f"Gzipped TSV: {df.shape[1]} columns, showing first {min(head, len(df))} rows",
+                    "source_file": path,
+                    "columns": df.columns.tolist(),
+                    "dtypes": {col: str(dt) for col, dt in df.dtypes.items()},
+                    "head": df.head(head).to_dict("records"),
+                }
+            except Exception:
+                return {
+                    "summary": f"Gzipped file at {path} — cannot auto-detect format. Try specifying the format in run_python.",
+                    "source_file": path,
+                }
+
+        return {
+            "summary": f"Unsupported format: {suffix}. Use run_python to load this file directly.",
+            "source_file": path,
+        }
+
+    except Exception as e:
+        return {"error": str(e), "summary": f"Error inspecting {path}: {e}"}

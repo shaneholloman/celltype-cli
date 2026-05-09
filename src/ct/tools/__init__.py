@@ -53,6 +53,8 @@ _TOOL_MODULES = (
     "cellxgene",
     "clue",
     "remote_data",
+    "epigenomics",
+    "metabolic",
     # Container tools (esmfold, boltz2, etc.) loaded from tool.yaml by _container_tools.py
 )
 
@@ -66,6 +68,8 @@ class Tool:
     function: Callable         # The actual Python function
     parameters: dict = field(default_factory=dict)  # Parameter descriptions
     requires_data: list = field(default_factory=list)  # Required datasets
+    requires_packages: list = field(default_factory=list)  # Python packages needed (e.g., ["cobra"])
+    requires_binaries: list = field(default_factory=list)  # CLI binaries needed on PATH (e.g., ["cas-offinder"])
     usage_guide: str = ""      # When/why to use this tool (injected into planner prompt)
     requires_gpu: bool = False  # Whether this tool needs GPU compute
     gpu_profile: str = ""       # Modal compute class (e.g., "structure", "docking")
@@ -99,6 +103,7 @@ class ToolRegistry:
 
     def register(self, name: str, description: str, category: str,
                  parameters: dict = None, requires_data: list = None,
+                 requires_packages: list = None, requires_binaries: list = None,
                  usage_guide: str = "",
                  requires_gpu: bool = False, gpu_profile: str = "",
                  estimated_cost: float = 0.0, docker_image: str = "",
@@ -114,6 +119,8 @@ class ToolRegistry:
                 function=func,
                 parameters=parameters or {},
                 requires_data=requires_data or [],
+                requires_packages=requires_packages or [],
+                requires_binaries=requires_binaries or [],
                 usage_guide=usage_guide,
                 requires_gpu=requires_gpu,
                 gpu_profile=gpu_profile,
@@ -263,3 +270,44 @@ def ensure_loaded():
 def tool_load_errors() -> dict[str, str]:
     """Return module import failures from tool loading."""
     return dict(_load_errors)
+
+
+def check_dependency(packages: list[str] = None, binaries: list[str] = None) -> dict | None:
+    """Check if required packages and binaries are available.
+
+    Returns None if all dependencies are satisfied, or an error dict if not.
+    Used by tools with external dependencies for graceful degradation.
+    """
+    missing_packages = []
+    missing_binaries = []
+
+    for pkg in (packages or []):
+        try:
+            __import__(pkg)
+        except ImportError:
+            missing_packages.append(pkg)
+
+    import shutil
+    for binary in (binaries or []):
+        if not shutil.which(binary):
+            missing_binaries.append(binary)
+
+    if not missing_packages and not missing_binaries:
+        return None
+
+    parts = []
+    install_cmds = []
+    if missing_packages:
+        parts.append(f"Missing Python packages: {', '.join(missing_packages)}")
+        install_cmds.append(f"pip install {' '.join(missing_packages)}")
+    if missing_binaries:
+        parts.append(f"Missing binaries: {', '.join(missing_binaries)}")
+        install_cmds.append("bash scripts/setup_biotools.sh --tier2")
+
+    return {
+        "error": "; ".join(parts),
+        "summary": f"{'; '.join(parts)}. Run: bash scripts/setup_biotools.sh",
+        "missing_packages": missing_packages,
+        "missing_binaries": missing_binaries,
+        "install_commands": install_cmds,
+    }

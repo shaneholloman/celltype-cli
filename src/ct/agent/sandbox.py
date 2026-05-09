@@ -112,6 +112,7 @@ def _make_safe_open(output_dir: Path, extra_read_dirs: list[Path] = None):
 _ALLOWED_SUBPROCESS_COMMANDS = frozenset({
     "bwa", "samtools", "busco", "minimap2", "bowtie2",
     "muscle", "mafft", "clustalw", "phykit",
+    "crispor.py", "cas-offinder",  # CRISPR guide design + off-target prediction
 })
 
 
@@ -213,6 +214,16 @@ class Sandbox:
 
         # Add safe_subprocess_run for whitelisted bioinformatics tools
         self._namespace["safe_subprocess_run"] = _make_safe_subprocess()
+
+        # Inject DATA_ROOT for data lake access
+        try:
+            from ct.agent.config import Config
+            cfg = Config.load()
+            data_base = cfg.get("data.base")
+            if data_base and Path(data_base).exists():
+                self._namespace["DATA_ROOT"] = Path(data_base)
+        except Exception:
+            pass  # Config not available — skip DATA_ROOT
 
         # Optional libraries — add if available
         try:

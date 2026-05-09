@@ -1,10 +1,11 @@
 """
-Genomics tools: GWAS lookup, eQTL analysis, variant annotation, Mendelian randomization.
-
-These are REST/GraphQL API wrappers -- no local data required.
+Genomics tools: GWAS lookup, eQTL analysis, variant annotation, Mendelian randomization,
+gnomAD constraint scores, mouse phenotype lookups.
 """
 
 import math
+
+import pandas as pd
 
 from ct.tools import registry
 from ct.tools.http_client import request, request_json
@@ -1385,3 +1386,294 @@ def variant_classify(goal: str, _session=None, _prior_results=None, **kwargs) ->
         session=_session,
         prior_results=_prior_results,
     )
+
+
+# ---------------------------------------------------------------------------
+# gnomAD constraint lookup (local data)
+# ---------------------------------------------------------------------------
+
+@registry.register(
+    name="genomics.gnomad_constraint",
+    description="Look up gnomAD loss-of-function constraint scores (pLI, LOEUF, missense Z) for a gene. Critical for assessing safety of gene editing targets.",
+    category="genomics",
+    parameters={
+        "gene": "Gene symbol (e.g. PCSK9, TP53, BRCA1)",
+    },
+    requires_data=["gnomad"],
+    usage_guide="Assess whether a gene is intolerant to loss-of-function. Essential for safety assessment of knockout/silencing targets. pLI near 1 = haploinsufficient (dangerous to edit), LOEUF < 0.35 = strongly constrained.",
+)
+def gnomad_constraint(gene: str, **kwargs) -> dict:
+    """Look up gnomAD constraint metrics for a gene."""
+    from ct.data.loaders_dossier import load_gnomad_constraints
+
+    try:
+        df = load_gnomad_constraints()
+    except FileNotFoundError as e:
+        return {"error": str(e), "summary": str(e)}
+
+    gene = str(gene).strip().upper()
+
+    # Search by gene symbol
+    matches = df[df["gene"].str.upper() == gene]
+    if matches.empty:
+        return {
+            "error": f"Gene {gene} not found in gnomAD constraint data",
+            "summary": f"Gene {gene} not found in gnomAD v4.1 constraint data ({len(df)} genes available).",
+            "source": "gnomAD v4.1",
+            "source_file": "gene_context/genomic/gnomad/gnomad.v4.1.constraint_metrics.tsv",
+            "query": {"gene": gene},
+        }
+
+    row = matches.iloc[0]
+
+    pli = float(row.get("lof_hc_lc.pLI", row.get("lof.pLI", 0)))
+    loeuf = float(row.get("lof.oe_ci.upper", 1.0))
+    oe_lof = float(row.get("lof.oe", 1.0))
+    mis_z = float(row.get("mis.z_score", 0))
+    syn_z = float(row.get("syn.z_score", 0))
+
+    # Interpret
+    if pli > 0.9:
+        lof_interpretation = "highly intolerant to loss-of-function (haploinsufficient)"
+    elif loeuf < 0.35:
+        lof_interpretation = "strongly constrained against loss-of-function"
+    elif loeuf < 0.6:
+        lof_interpretation = "moderately constrained"
+    else:
+        lof_interpretation = "tolerant to loss-of-function"
+
+    return {
+        "summary": (
+            f"gnomAD constraint for {gene}: pLI={pli:.3f}, LOEUF={loeuf:.3f}. "
+            f"{lof_interpretation.capitalize()}. "
+            f"Missense Z={mis_z:.2f}, Synonymous Z={syn_z:.2f}."
+        ),
+        "source": "gnomAD v4.1",
+        "source_file": "gene_context/genomic/gnomad/gnomad.v4.1.constraint_metrics.tsv",
+        "query": {"gene": gene},
+        "gene": gene,
+        "pLI": round(pli, 4),
+        "LOEUF": round(loeuf, 4),
+        "oe_lof": round(oe_lof, 4),
+        "mis_z": round(mis_z, 3),
+        "syn_z": round(syn_z, 3),
+        "lof_interpretation": lof_interpretation,
+        "transcript": str(row.get("transcript", "")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Mouse phenotype lookup (IMPC + MGI, local data)
+# ---------------------------------------------------------------------------
+
+@registry.register(
+    name="genomics.mouse_phenotypes",
+    description="Look up mouse knockout phenotypes for a gene from IMPC and MGI databases. Maps human gene to mouse ortholog automatically.",
+    category="genomics",
+    parameters={
+        "gene": "Human gene symbol (e.g. PCSK9, BRCA1)",
+    },
+    requires_data=["impc", "mgi"],
+    usage_guide="Know what happens when a gene is knocked out in mice. Critical for preclinical safety assessment and understanding gene function in vivo. Reports significant phenotypes (p<0.05) sorted by significance.",
+)
+def mouse_phenotypes(gene: str, **kwargs) -> dict:
+    """Query IMPC and MGI for mouse knockout phenotypes."""
+    gene = str(gene).strip().upper()
+
+    # Try IMPC first
+    impc_phenotypes = []
+    impc_source_file = "gene_context/mouse_models/impc/statistical_results.csv"
+    try:
+        from ct.data.loaders_dossier import load_impc_phenotypes
+        df = load_impc_phenotypes()
+
+        # IMPC uses marker_symbol (mouse gene) — try mouse ortholog convention
+        mouse_gene = gene[0] + gene[1:].lower()  # PCSK9 -> Pcsk9
+
+        matches = df[df["marker_symbol"] == mouse_gene]
+        if matches.empty:
+            matches = df[df["marker_symbol"].str.upper() == gene]
+
+        if not matches.empty:
+            for _, row in matches.iterrows():
+                p_val = row.get("p_value")
+                try:
+                    p_val = float(p_val) if pd.notna(p_val) else None
+                except (ValueError, TypeError):
+                    p_val = None
+
+                effect = row.get("effect_size")
+                try:
+                    effect = float(effect) if pd.notna(effect) else None
+                except (ValueError, TypeError):
+                    effect = None
+
+                impc_phenotypes.append({
+                    "mp_term": str(row.get("mp_term_name", "")),
+                    "mp_id": str(row.get("mp_term_id", "")),
+                    "p_value": p_val,
+                    "effect_size": effect,
+                    "phenotyping_center": str(row.get("phenotyping_center", "")),
+                    "procedure": str(row.get("procedure_name", "")),
+                    "parameter": str(row.get("parameter_name", "")),
+                })
+    except FileNotFoundError:
+        pass
+
+    # Deduplicate by mp_term, keep most significant
+    seen = {}
+    for p in impc_phenotypes:
+        key = p["mp_term"]
+        if not key:
+            continue
+        if key not in seen or (p["p_value"] is not None and (seen[key]["p_value"] is None or p["p_value"] < seen[key]["p_value"])):
+            seen[key] = p
+    unique_phenotypes = list(seen.values())
+
+    sig_phenotypes = [p for p in unique_phenotypes if p["p_value"] is not None and p["p_value"] < 0.05]
+    sig_phenotypes.sort(key=lambda x: x["p_value"] if x["p_value"] is not None else 1.0)
+
+    # Try MGI for additional data
+    mgi_phenotypes = []
+    try:
+        from ct.data.loaders_dossier import load_mgi_phenotypes
+        mgi_df = load_mgi_phenotypes()
+
+        # MGI uses marker symbols; extract from allele_symbol
+        mouse_gene = gene[0] + gene[1:].lower()
+        mgi_matches = mgi_df[mgi_df["allele_symbol"].str.contains(mouse_gene, case=False, na=False)]
+
+        for _, row in mgi_matches.head(20).iterrows():
+            mgi_phenotypes.append({
+                "mp_id": str(row.get("mp_id", "")),
+                "phenotype": str(row.get("phenotype", "")),
+                "allele": str(row.get("allele_symbol", "")),
+                "background": str(row.get("genetic_background", "")),
+            })
+    except FileNotFoundError:
+        pass
+
+    top_pheno = ", ".join(p["mp_term"] for p in sig_phenotypes[:5])
+
+    sources_used = []
+    if impc_phenotypes:
+        sources_used.append("IMPC")
+    if mgi_phenotypes:
+        sources_used.append("MGI")
+
+    return {
+        "summary": (
+            f"Mouse knockout for {gene}: {len(sig_phenotypes)} significant IMPC phenotypes "
+            f"(p<0.05) out of {len(unique_phenotypes)} tested. "
+            f"Top: {top_pheno or 'none significant'}. "
+            f"{'MGI: ' + str(len(mgi_phenotypes)) + ' additional annotations.' if mgi_phenotypes else ''}"
+        ),
+        "source": ", ".join(sources_used) if sources_used else "IMPC / MGI",
+        "source_file": impc_source_file,
+        "query": {"gene": gene},
+        "gene": gene,
+        "mouse_ortholog": gene[0] + gene[1:].lower(),
+        "total_phenotypes_tested": len(unique_phenotypes),
+        "significant_phenotypes": len(sig_phenotypes),
+        "phenotypes": sig_phenotypes[:20],
+        "all_phenotype_terms": [p["mp_term"] for p in sig_phenotypes],
+        "mgi_annotations": mgi_phenotypes[:10],
+    }
+
+
+# ---------------------------------------------------------------------------
+# OMIM Mendelian disease lookup (API)
+# ---------------------------------------------------------------------------
+
+@registry.register(
+    name="genomics.omim_lookup",
+    description="Look up Mendelian disease associations for a gene from OMIM (Online Mendelian Inheritance in Man). Returns MIM numbers, disease names, inheritance patterns.",
+    category="genomics",
+    parameters={
+        "gene": "Gene symbol (e.g. PCSK9, BRCA1, CFTR)",
+    },
+    requires_data=[],
+    usage_guide="Find Mendelian disease-gene associations. OMIM is the definitive source for monogenic disease links. Requires OMIM_API_KEY environment variable.",
+)
+def omim_lookup(gene: str, **kwargs) -> dict:
+    """Query OMIM REST API for gene-disease associations."""
+    import os
+
+    api_key = os.environ.get("OMIM_API_KEY")
+    if not api_key:
+        return {
+            "error": "OMIM_API_KEY not set",
+            "summary": "OMIM API requires an API key. Register at https://omim.org/api (free for academic use). Then: export OMIM_API_KEY=your_key",
+            "source": "OMIM",
+            "query": {"gene": gene},
+        }
+
+    gene = str(gene).strip()
+
+    # Search OMIM for the gene
+    data, error = request_json(
+        "GET",
+        "https://api.omim.org/api/entry/search",
+        params={
+            "search": gene,
+            "filter": "geneMap",
+            "fields": "geneMap",
+            "format": "json",
+            "apiKey": api_key,
+            "limit": 10,
+        },
+        timeout=15,
+        retries=2,
+    )
+
+    if error:
+        return {"error": f"OMIM API error: {error}", "summary": f"OMIM query failed: {error}", "source": "OMIM", "query": {"gene": gene}}
+
+    if not data:
+        return {"error": "Empty OMIM response", "summary": "No data returned from OMIM API.", "source": "OMIM", "query": {"gene": gene}}
+
+    # Parse OMIM response
+    diseases = []
+    try:
+        entries = data.get("omim", {}).get("searchResponse", {}).get("entryList", [])
+        for entry_wrapper in entries:
+            entry = entry_wrapper.get("entry", {})
+            gene_map = entry.get("geneMap", {})
+
+            # Get gene symbols
+            gene_symbols = gene_map.get("geneSymbols", "")
+            if gene.upper() not in gene_symbols.upper():
+                continue
+
+            mim_number = entry.get("mimNumber", "")
+
+            # Get phenotype map
+            pheno_maps = gene_map.get("phenotypeMapList", [])
+            for pm_wrapper in pheno_maps:
+                pm = pm_wrapper.get("phenotypeMap", {})
+                diseases.append({
+                    "mim_number": str(mim_number),
+                    "phenotype_mim": str(pm.get("phenotypeMimNumber", "")),
+                    "phenotype": pm.get("phenotype", ""),
+                    "inheritance": pm.get("phenotypeInheritance", ""),
+                    "mapping_key": pm.get("phenotypeMappingKey", ""),
+                    "gene_symbols": gene_symbols,
+                })
+    except Exception as e:
+        return {"error": f"Failed to parse OMIM response: {e}", "summary": f"Error parsing OMIM data: {e}", "source": "OMIM", "query": {"gene": gene}}
+
+    if diseases:
+        top_diseases = ", ".join(d["phenotype"][:50] for d in diseases[:3])
+        summary = f"OMIM: {len(diseases)} Mendelian disease associations for {gene}. Top: {top_diseases}."
+    else:
+        summary = f"No Mendelian disease associations found for {gene} in OMIM."
+
+    return {
+        "summary": summary,
+        "source": "OMIM (Online Mendelian Inheritance in Man)",
+        "source_file": "API: api.omim.org",
+        "query": {"gene": gene},
+        "gene": gene,
+        "diseases": diseases,
+        "total_diseases": len(diseases),
+    }

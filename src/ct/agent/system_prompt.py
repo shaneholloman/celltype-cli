@@ -44,6 +44,19 @@ synthesis at the end.
 # Synthesis instructions (injected at the end)
 # ---------------------------------------------------------------------------
 
+_PROVENANCE_RULES = """
+### Provenance Rules
+When reporting results from the data lake, ALWAYS include:
+1. **Dataset name and version** (e.g., "gnomAD v4.1", "IMPC 2026-03")
+2. **File path queried** (e.g., "gene_context/genomic/gnomad/...")
+3. **Filter criteria applied** (e.g., "gene == 'PCSK9', canonical == True")
+4. **Actual values retrieved** (e.g., "pLI = 0.00, LOEUF = 0.85")
+
+Never state a fact from a dataset without citing which dataset it came from.
+Every number must be traceable to a specific file and query.
+"""
+
+
 _SYNTHESIS_INSTRUCTIONS = """\
 
 ## When You Are Ready to Answer
@@ -178,18 +191,29 @@ def build_system_prompt(
     except Exception as e:
         logger.warning("Could not load synthesizer primer: %s", e)
 
-    # 8. Synthesis instructions
+    # 8. Data lake catalog (injected when data.base is configured)
+    try:
+        from ct.data.catalog import get_data_catalog_prompt
+        catalog_prompt = get_data_catalog_prompt(session.config if session else None)
+        if catalog_prompt:
+            parts.append("\n## Available Data Lake\n")
+            parts.append(catalog_prompt)
+            parts.append(_PROVENANCE_RULES)
+    except Exception as e:
+        logger.warning("Could not load data catalog: %s", e)
+
+    # 9. Synthesis instructions
     parts.append(_SYNTHESIS_INSTRUCTIONS)
 
     # 8b. Structure input guidance
     parts.append(_STRUCTURE_INPUT_GUIDANCE)
 
-    # 9. Dynamic data context
+    # 10. Dynamic data context
     if data_context:
         parts.append("\n## Data Context\n")
         parts.append(data_context)
 
-    # 10. Session history (for multi-turn interactive mode)
+    # 11. Session history (for multi-turn interactive mode)
     if history:
         parts.append("\n## Prior Conversation\n")
         parts.append(history)

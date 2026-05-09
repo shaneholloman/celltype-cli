@@ -393,6 +393,12 @@ def run_checks(config: Config | None = None, session=None) -> list[DoctorCheck]:
             detail="compute.mode=auto (will detect at runtime)",
         ))
 
+    # Extended bioinformatics tool dependencies
+    try:
+        checks.extend(_check_biotools())
+    except Exception as e:
+        logger.warning("Biotools check failed: %s", e)
+
     return checks
 
 
@@ -596,3 +602,131 @@ def _check_tool_health(session) -> DoctorCheck:
         status="warn",
         detail="; ".join(parts),
     )
+
+
+# ---------------------------------------------------------------------------
+# Biotools dependency checks (Tier 1-4)
+# ---------------------------------------------------------------------------
+
+def _check_biotools() -> list[DoctorCheck]:
+    """Check extended bioinformatics tool dependencies across all 4 tiers."""
+    checks = []
+    from ct.agent.config import Config
+    cfg = Config.load()
+    data_base = cfg.get("data.base")
+
+    # Tier 1: Python packages
+    tier1_packages = {
+        "cobra": "COBRApy (metabolic flux analysis)",
+        "pyscenic": "pySCENIC (gene regulatory network inference)",
+    }
+    for pkg, desc in tier1_packages.items():
+        try:
+            mod = __import__(pkg)
+            ver = getattr(mod, "__version__", "installed")
+            checks.append(DoctorCheck(
+                name=f"tier1.{pkg}",
+                status="ok",
+                detail=f"{desc}: {ver}",
+            ))
+        except ImportError:
+            checks.append(DoctorCheck(
+                name=f"tier1.{pkg}",
+                status="warn",
+                detail=f"{desc}: not installed. Run: bash scripts/setup_biotools.sh --tier1",
+            ))
+
+    # Tier 2: CLI binaries
+    import shutil
+    tier2_binaries = {
+        "cas-offinder": ("Cas-OFFinder (CRISPR off-target search)", None),
+    }
+    for binary, (desc, _) in tier2_binaries.items():
+        if shutil.which(binary):
+            checks.append(DoctorCheck(name=f"tier2.{binary}", status="ok", detail=f"{desc}: found"))
+        else:
+            # Check the configured data directory too.
+            staging = os.environ.get("STAGING_DIR") or data_base
+            alt_path = Path(staging) / "crispr_tools" / "cas_offinder" / binary
+            if alt_path.exists():
+                checks.append(DoctorCheck(name=f"tier2.{binary}", status="ok", detail=f"{desc}: found at {alt_path}"))
+            else:
+                checks.append(DoctorCheck(
+                    name=f"tier2.{binary}",
+                    status="warn",
+                    detail=f"{desc}: not found. Run: bash scripts/setup_biotools.sh --tier2",
+                ))
+
+    # Check CRISPOR script
+    crispor_script = Path(data_base) / "crispr_tools" / "crispor" / "crispor.py"
+    if crispor_script.exists():
+        checks.append(DoctorCheck(name="tier2.crispor", status="ok", detail=f"CRISPOR script: found at {crispor_script}"))
+    else:
+        checks.append(DoctorCheck(name="tier2.crispor", status="warn", detail="CRISPOR script: not found"))
+
+    # Check hg38.2bit genome index
+    hg38_2bit = Path(data_base) / "crispr_tools" / "crispor" / "hg38.2bit"
+    if hg38_2bit.exists():
+        size_mb = hg38_2bit.stat().st_size // (1024 * 1024)
+        checks.append(DoctorCheck(name="tier2.hg38_2bit", status="ok", detail=f"hg38.2bit genome index: {size_mb} MB"))
+    else:
+        checks.append(DoctorCheck(
+            name="tier2.hg38_2bit",
+            status="warn",
+            detail="hg38.2bit genome index: not found. Run: bash scripts/setup_biotools.sh --tier2",
+        ))
+
+    # Tier 3: R packages
+    import subprocess
+    for rpkg in ["minfi", "methylKit"]:
+        try:
+            result = subprocess.run(
+                ["Rscript", "-e", f'library({rpkg}); cat("OK")'],
+                capture_output=True, text=True, timeout=30,
+            )
+            if "OK" in result.stdout:
+                checks.append(DoctorCheck(name=f"tier3.{rpkg}", status="ok", detail=f"{rpkg}: installed"))
+            else:
+                checks.append(DoctorCheck(
+                    name=f"tier3.{rpkg}",
+                    status="warn",
+                    detail=f"{rpkg}: not installed. Run: bash scripts/setup_biotools.sh --tier3",
+                ))
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            checks.append(DoctorCheck(
+                name=f"tier3.{rpkg}",
+                status="warn",
+                detail=f"{rpkg}: R not available or package not installed",
+            ))
+
+    # Tier 4: API keys
+    omim_key = os.environ.get("OMIM_API_KEY")
+    if omim_key:
+        checks.append(DoctorCheck(name="tier4.omim_api_key", status="ok", detail="OMIM_API_KEY: set"))
+    else:
+        checks.append(DoctorCheck(
+            name="tier4.omim_api_key",
+            status="warn",
+            detail="OMIM_API_KEY: not set. Register at https://omim.org/api",
+        ))
+
+    # Data lake
+    data_path = Path(data_base)
+    if data_path.exists():
+        try:
+            from ct.data.catalog import CATALOG
+            checks.append(DoctorCheck(
+                name="data_lake",
+                status="ok",
+                detail=f"data.base={data_base} ({len(CATALOG)} catalogued sources)",
+            ))
+        except Exception:
+            checks.append(DoctorCheck(name="data_lake", status="ok", detail=f"data.base={data_base}"))
+    else:
+        checks.append(DoctorCheck(
+            name="data_lake",
+            status="warn",
+            detail=f"data.base={data_base} does not exist. Run: ct config set data.base /path/to/bronze",
+        ))
+
+    return checks
